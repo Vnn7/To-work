@@ -112,8 +112,8 @@ Body:
 
 ```json
 {
-  "fullName": "Fabio Vinicios",
-  "email": "fabio@email.com",
+  "fullName": "Gabriel Vinicios",
+  "email": "gabriel@teste.com",
   "password": "123456",
   "accountType": "PRESTADOR"
 }
@@ -136,7 +136,7 @@ Body:
 
 ```json
 {
-  "email": "fabio@email.com",
+  "email": "vinicios@email.com",
   "password": "123456"
 }
 ```
