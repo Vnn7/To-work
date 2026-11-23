@@ -16,10 +16,18 @@ require('dotenv').config();
 
 const publicRoutes = require('./routes/publicRoutes');
 const authRoutes = require('./routes/authRoutes');
+const providerRoutes = require('./routes/providerRoutes');
+const requestRoutes = require('./routes/requestRoutes');
 
 // Aqui nasce a aplicação Express.
 // A variável "app" representa a API inteira.
 const app = express();
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 
 /*
   CORS
@@ -47,7 +55,27 @@ app.use(cors({
 
   Sem essa linha, o req.body ficaria vazio ou indefinido.
 */
-app.use(express.json());
+app.use(express.json({ limit: '32kb' }));
+
+// Limitador em memória, suficiente para uma instância de demonstração local.
+const tentativas = new Map();
+const limpeza = setInterval(() => {
+  for (const [ip, value] of tentativas) if (value.until < Date.now()) tentativas.delete(ip);
+}, 60000);
+limpeza.unref();
+app.use('/api/auth', (req, res, next) => {
+  if (req.method !== 'POST') return next();
+  const agora = Date.now();
+  let entrada = tentativas.get(req.ip);
+  if (!entrada || entrada.until < agora) entrada = { count: 0, until: agora + 15 * 60000 };
+  entrada.count += 1;
+  tentativas.set(req.ip, entrada);
+  if (entrada.count > 50) {
+    res.setHeader('Retry-After', Math.ceil((entrada.until - agora) / 1000));
+    return res.status(429).json({ message: 'Muitas tentativas. Aguarde 15 minutos e tente novamente.' });
+  }
+  next();
+});
 
 /*
   Rotas públicas
@@ -82,6 +110,10 @@ app.use('/api', publicRoutes);
   GET /api/auth/me
 */
 app.use('/api/auth', authRoutes);
+app.use('/api/requests', requestRoutes);
+
+// Cadastro de categorias e gestão dos vínculos do prestador autenticado.
+app.use('/api', providerRoutes);
 
 /*
   Rota não encontrada
@@ -93,4 +125,13 @@ app.use((req, res) => {
   return res.status(404).json({ message: 'Rota não encontrada.' });
 });
 
+app.use((erro, req, res, next) => {
+  if (erro.type === 'entity.parse.failed') return res.status(400).json({ message: 'JSON inválido.' });
+  if (erro.type === 'entity.too.large') return res.status(413).json({ message: 'Dados enviados excedem o limite.' });
+  if (erro.code === 'SQLITE_CONSTRAINT' && /UNIQUE/.test(erro.message)) {
+    return res.status(409).json({ message: 'Esse registro já existe.' });
+  }
+  console.error('Erro na API:', erro.message);
+  return res.status(500).json({ message: 'Não foi possível concluir a operação. Tente novamente.' });
+});
 module.exports = app;

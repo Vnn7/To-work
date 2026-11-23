@@ -6,11 +6,12 @@
   No projeto, ele protege o Dashboard.
 */
 
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 
 export default function ProtectedRoute({ children }) {
-  const { user, loading } = useAuth();
+  const { user, loading, sessionError, retrySession } = useAuth();
+  const location = useLocation();
 
   // Enquanto o AuthContext verifica se existe token válido, mostramos carregando.
   if (loading) {
@@ -18,8 +19,9 @@ export default function ProtectedRoute({ children }) {
   }
 
   // Se não houver usuário logado, redireciona para o login.
+  if (sessionError) return <div className="page card"><p role="alert">{sessionError}</p><button className="btn btn-primary" onClick={retrySession}>Tentar novamente</button></div>;
   if (!user) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" state={{ from: location.pathname }} replace />;
   }
 
   // Se existe usuário, libera a página protegida.

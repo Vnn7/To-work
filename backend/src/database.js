@@ -16,6 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
+const catalogoCategorias = require('./data/serviceCategories.json');
 require('dotenv').config();
 
 // Caminho do arquivo do banco. Vem do .env ou usa o caminho padrão.
@@ -33,6 +34,32 @@ if (!fs.existsSync(pastaBanco)) {
 
 // Abre o arquivo SQLite. Se o arquivo não existir, o SQLite cria.
 const db = new sqlite3.Database(caminhoBanco);
+db.configure('busyTimeout', 5000);
+
+// Conexão exclusiva: requisições simultâneas não misturam suas transações.
+// ROLLBACK desfaz tudo quando uma das etapas falha.
+async function transacao(operacao) {
+  const conexao = new sqlite3.Database(caminhoBanco);
+  conexao.configure('busyTimeout', 5000);
+  const run = (sql, params = []) => new Promise((resolve, reject) => {
+    conexao.run(sql, params, function (erro) {
+      if (erro) reject(erro);
+      else resolve({ id: this.lastID, alteracoes: this.changes });
+    });
+  });
+  try {
+    await run('PRAGMA foreign_keys = ON');
+    await run('BEGIN IMMEDIATE');
+    const resultado = await operacao(run);
+    await run('COMMIT');
+    return resultado;
+  } catch (erro) {
+    await run('ROLLBACK').catch(() => {});
+    throw erro;
+  } finally {
+    await new Promise((resolve) => conexao.close(resolve));
+  }
+}
 
 /*
   Função executar()
@@ -102,6 +129,10 @@ function buscarTodos(sql, parametros = []) {
       return resolve(linhas);
     });
   });
+}
+
+function fecharBanco() {
+  return new Promise((resolve, reject) => db.close((erro) => erro ? reject(erro) : resolve()));
 }
 
 /*
@@ -200,11 +231,30 @@ async function iniciarBanco() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider_id INTEGER NOT NULL,
       category_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ATIVO' CHECK (status IN ('ATIVO', 'INATIVO')),
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE (provider_id, category_id),
       FOREIGN KEY (provider_id) REFERENCES provider_profiles(id) ON DELETE CASCADE,
       FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
     )
+  `);
+
+  // Schema aditivo: novas tabelas sem apagar dados existentes.
+  const schema = fs.readFileSync(path.join(__dirname, '..', 'schema.sql'), 'utf8');
+  await new Promise((resolve, reject) => db.exec(schema, (erro) => erro ? reject(erro) : resolve()));
+
+  // Atualiza bancos criados antes da inclusão do status sem apagar vínculos.
+  const colunasVinculo = await buscarTodos('PRAGMA table_info(provider_categories)');
+  if (!colunasVinculo.some((coluna) => coluna.name === 'status')) {
+    await executar("ALTER TABLE provider_categories ADD COLUMN status TEXT NOT NULL DEFAULT 'ATIVO' CHECK (status IN ('ATIVO', 'INATIVO'))");
+  }
+
+  // Cadastros antigos de PRESTADOR também precisam de perfil para aparecer na Home.
+  await executar(`
+    INSERT OR IGNORE INTO provider_profiles (user_id, description)
+    SELECT id, 'Prestador cadastrado na plataforma.'
+    FROM users
+    WHERE account_type = 'PRESTADOR'
   `);
 
   /*
@@ -215,26 +265,20 @@ async function iniciarBanco() {
 
     Isso evita duplicar categorias toda vez que a API inicia.
   */
-  const categoriasIniciais = [
-    ['Limpeza', 'Diaristas, limpeza residencial e comercial.'],
-    ['Elétrica', 'Instalações, reparos e manutenção elétrica.'],
-    ['Hidráulica', 'Encanadores, vazamentos e instalações hidráulicas.'],
-    ['Pintura', 'Pintura residencial, comercial e pequenos reparos.'],
-    ['Jardinagem', 'Manutenção de jardins, poda e paisagismo.'],
-    ['Informática', 'Suporte técnico, manutenção de computadores e redes.']
-  ];
-
-  for (const categoria of categoriasIniciais) {
-    await executar(
-      'INSERT OR IGNORE INTO categories (name, description) VALUES (?, ?)',
-      categoria
-    );
-  }
+  await transacao(async (run) => {
+    for (const grupo of catalogoCategorias) {
+      for (const categoria of grupo.items) {
+        await run('INSERT OR IGNORE INTO categories (name, description) VALUES (?, ?)', categoria);
+      }
+    }
+  });
 }
 
 module.exports = {
   executar,
   buscarUm,
   buscarTodos,
-  iniciarBanco
+  iniciarBanco,
+  fecharBanco,
+  transacao
 };

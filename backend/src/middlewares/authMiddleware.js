@@ -12,14 +12,7 @@
 
 const jwt = require('jsonwebtoken');
 const { buscarUm } = require('../database');
-
-function pegarSegredoJWT() {
-  if (!process.env.JWT_SECRET) {
-    throw new Error('JWT_SECRET não configurado no arquivo .env');
-  }
-
-  return process.env.JWT_SECRET;
-}
+const { jwtSecret } = require('../config');
 
 async function authMiddleware(req, res, next) {
   try {
@@ -43,7 +36,7 @@ async function authMiddleware(req, res, next) {
     }
 
     // jwt.verify valida assinatura e expiração do token.
-    const dadosDoToken = jwt.verify(token, pegarSegredoJWT());
+    const dadosDoToken = jwt.verify(token, jwtSecret, { algorithms: ['HS256'] });
 
     // Mesmo com token válido, confirmamos se o usuário ainda existe e está ativo.
     const usuario = await buscarUm(
@@ -73,7 +66,10 @@ async function authMiddleware(req, res, next) {
     // next() significa: "está tudo certo, pode continuar para a rota final".
     return next();
   } catch (erro) {
-    return res.status(401).json({ message: 'Token inválido ou expirado.' });
+    if (['JsonWebTokenError', 'TokenExpiredError', 'NotBeforeError'].includes(erro.name)) {
+      return res.status(401).json({ message: 'Token inválido ou expirado.' });
+    }
+    return next(erro);
   }
 }
 
